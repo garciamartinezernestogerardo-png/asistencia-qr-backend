@@ -513,6 +513,73 @@ def alumno_todas_asistencias():
 
 # ─── run ─────────────────────────────────────────────────────────────────────
 
+# ─── registro público ─────────────────────────────────────────────────────────
+
+@app.route("/api/auth/registro", methods=["POST"])
+def registro_usuario():
+    data = request.get_json()
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
+    nombre = data.get("nombre", "").strip()
+    rol = data.get("rol", "").strip()
+    codigo_clase = data.get("codigo_clase", "").strip()
+
+    if not username or not password or not nombre or not rol:
+        return jsonify({"error": "Todos los campos son obligatorios"}), 400
+    if rol not in ["maestro", "alumno"]:
+        return jsonify({"error": "Rol inválido"}), 400
+    if rol == "alumno" and not codigo_clase:
+        return jsonify({"error": "El código de clase es obligatorio"}), 400
+
+    db = get_db()
+    existe = db.execute("SELECT id FROM usuarios WHERE username=?", (username,)).fetchone()
+    if existe:
+        db.close()
+        return jsonify({"error": "El usuario ya existe"}), 400
+
+    if rol == "alumno":
+        clase = db.execute("SELECT id FROM clases WHERE codigo=?", (codigo_clase,)).fetchone()
+        if not clase:
+            db.close()
+            return jsonify({"error": "Código de clase inválido"}), 400
+
+    hashed = generate_password_hash(password)
+    uid = new_id()
+    db.execute("INSERT INTO usuarios (id, nombre, username, password, rol) VALUES (?,?,?,?,?)",
+               (uid, nombre, username, hashed, rol))
+    db.commit()
+
+    if rol == "alumno":
+        db.execute("INSERT INTO inscripciones (id, clase_id, alumno_id) VALUES (?,?,?)",
+                   (new_id(), clase["id"], uid))
+        db.commit()
+
+    db.close()
+    return jsonify({"mensaje": "Registro exitoso"}), 201
+
+
+@app.route("/api/maestro/clases", methods=["POST"])
+@require_auth("maestro")
+def maestro_create_clase():
+    data = request.get_json()
+    nombre = (data.get("nombre") or "").strip()
+    grupo = (data.get("grupo") or "").strip()
+    horario = (data.get("horario") or "").strip()
+    salon = (data.get("salon") or "").strip()
+    if not nombre or not grupo or not horario or not salon:
+        return jsonify({"error": "Todos los campos son requeridos"}), 400
+    import random, string
+    codigo = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    cid = new_id()
+    db = get_db()
+    db.execute(
+        "INSERT INTO clases (id, nombre, grupo, horario, salon, maestro_id, codigo) VALUES (?,?,?,?,?,?,?)",
+        (cid, nombre, grupo, horario, salon, request.user_id, codigo)
+    )
+    db.commit()
+    db.close()
+    return jsonify({"id": cid, "nombre": nombre, "grupo": grupo, "codigo": codigo}), 201
+
 if __name__ == "__main__":
     init_db()
     print("✅ Base de datos inicializada")
