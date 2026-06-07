@@ -685,31 +685,6 @@ def registro_usuario():
 
     return jsonify({"mensaje": "Registro exitoso. Revisa tu correo.", "user_id": uid}), 201
 
-
-@app.route("/api/auth/verificar", methods=["POST"])
-def verificar_codigo():
-    data = request.get_json()
-    email = data.get("email", "").strip()
-    codigo = data.get("codigo", "").strip()
-
-    if not email or not codigo:
-        return jsonify({"error": "Email y código son obligatorios"}), 400
-
-    conn = get_db()
-    cur = db_cursor(conn)
-    cur.execute("SELECT * FROM verificaciones WHERE email=%s AND codigo=%s AND usado=0 ORDER BY created_at DESC LIMIT 1", (email, codigo))
-    verificacion = fetchone(cur)
-
-    if not verificacion:
-        conn.close()
-        return jsonify({"error": "Código inválido o expirado"}), 400
-
-    cur.execute("UPDATE verificaciones SET usado=1 WHERE id=%s", (verificacion["id"],))
-    conn.commit()
-    conn.close()
-
-    return jsonify({"mensaje": "Correo verificado exitosamente"}), 200
-
 if __name__ == "__main__":
     init_db()
     print("✅ Base de datos PostgreSQL inicializada")
