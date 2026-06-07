@@ -19,7 +19,7 @@ from db import get_db, init_db
 from auth import make_token, require_auth
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app, origins="*", supports_credentials=False)
 
 QR_SECRET = "asistencia-qr-mobile-2026"
 QR_REFRESH_SECONDS = 20
