@@ -6,6 +6,10 @@ import cloudinary
 import cloudinary.uploader
 import psycopg2
 import psycopg2.extras
+import resend
+import random
+
+resend.api_key = "re_46Q2oL6T_3rUKVMCMnEAhKzxfzmb3MTY7"
 
 cloudinary.config(
     cloud_name = "dsgbh0gjs",
@@ -108,41 +112,29 @@ def me():
         return jsonify({"error": "Usuario no encontrado"}), 404
     return jsonify(user)
 
-@app.route("/api/auth/registro", methods=["POST"])
-def registro_usuario():
+@app.route("/api/auth/verificar", methods=["POST"])
+def verificar_codigo():
     data = request.get_json()
-    username = data.get("username", "").strip()
-    password = data.get("password", "").strip()
-    nombre = data.get("nombre", "").strip()
-    rol = data.get("rol", "").strip()
-    codigo_clase = data.get("codigo_clase", "").strip()
-    if not username or not password or not nombre or not rol:
-        return jsonify({"error": "Todos los campos son obligatorios"}), 400
-    if rol not in ["maestro", "alumno"]:
-        return jsonify({"error": "Rol inválido"}), 400
-    if rol == "alumno" and not codigo_clase:
-        return jsonify({"error": "El código de clase es obligatorio"}), 400
+    email = data.get("email", "").strip()
+    codigo = data.get("codigo", "").strip()
+    
+    if not email or not codigo:
+        return jsonify({"error": "Email y código son obligatorios"}), 400
+    
     conn = get_db()
     cur = db_cursor(conn)
-    cur.execute("SELECT id FROM usuarios WHERE username=%s", (username,))
-    if fetchone(cur):
+    cur.execute("SELECT * FROM verificaciones WHERE email=%s AND codigo=%s AND usado=0 ORDER BY created_at DESC LIMIT 1", (email, codigo))
+    verificacion = fetchone(cur)
+    
+    if not verificacion:
         conn.close()
-        return jsonify({"error": "El usuario ya existe"}), 400
-    clase = None
-    if rol == "alumno":
-        cur.execute("SELECT id FROM clases WHERE codigo=%s", (codigo_clase,))
-        clase = fetchone(cur)
-        if not clase:
-            conn.close()
-            return jsonify({"error": "Código de clase inválido"}), 400
-    hashed = generate_password_hash(password)
-    uid = new_id()
-    cur.execute("INSERT INTO usuarios (id, nombre, username, password, rol) VALUES (%s,%s,%s,%s,%s)", (uid, nombre, username, hashed, rol))
-    if rol == "alumno":
-        cur.execute("INSERT INTO inscripciones (id, clase_id, alumno_id) VALUES (%s,%s,%s)", (new_id(), clase["id"], uid))
+        return jsonify({"error": "Código inválido o expirado"}), 400
+    
+    cur.execute("UPDATE verificaciones SET usado=1 WHERE id=%s", (verificacion["id"],))
     conn.commit()
     conn.close()
-    return jsonify({"mensaje": "Registro exitoso"}), 201
+    
+    return jsonify({"mensaje": "Correo verificado exitosamente"}), 200
 
 # ─── maestro ─────────────────────────────────────────────────────────────────
 
