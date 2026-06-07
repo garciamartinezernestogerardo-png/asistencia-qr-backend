@@ -2,6 +2,14 @@ import uuid
 import hashlib
 import math
 import datetime
+import cloudinary
+import cloudinary.uploader
+
+cloudinary.config(
+    cloud_name = "dsgbh0gjs",
+    api_key = "841549752716897",
+    api_secret = "XGQ5pIl08xO_HtI8f5tWmjDXtHk"
+)
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -580,8 +588,373 @@ def maestro_create_clase():
     db.close()
     return jsonify({"id": cid, "nombre": nombre, "grupo": grupo, "codigo": codigo}), 201
 
+@app.route("/api/alumno/unirse", methods=["POST"])
+@require_auth("alumno")
+def alumno_unirse():
+    data = request.get_json()
+    codigo = data.get("codigo", "").strip()
+    if not codigo:
+        return jsonify({"error": "Código requerido"}), 400
+    db = get_db()
+    clase = db.execute("SELECT id, nombre FROM clases WHERE codigo=?", (codigo,)).fetchone()
+    if not clase:
+        db.close()
+        return jsonify({"error": "Código de clase inválido"}), 400
+    ya_inscrito = db.execute(
+        "SELECT id FROM inscripciones WHERE alumno_id=? AND clase_id=?",
+        (request.user_id, clase["id"])
+    ).fetchone()
+    if ya_inscrito:
+        db.close()
+        return jsonify({"error": "Ya estás inscrito en esta clase"}), 400
+    db.execute("INSERT INTO inscripciones (id, clase_id, alumno_id) VALUES (?,?,?)",
+               (new_id(), clase["id"], request.user_id))
+    db.commit()
+    db.close()
+    return jsonify({"mensaje": f"Te uniste a {clase['nombre']}"}), 201
+
+# ─── tareas ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/maestro/clases/<cid>/tareas")
+@require_auth("maestro")
+def maestro_list_tareas(cid):
+    db = get_db()
+    rows = db.execute("SELECT * FROM tareas WHERE clase_id=? ORDER BY created_at DESC", (cid,)).fetchall()
+    db.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.post("/api/maestro/clases/<cid>/tareas")
+@require_auth("maestro")
+def maestro_create_tarea(cid):
+    data = request.get_json()
+    titulo = (data.get("titulo") or "").strip()
+    descripcion = (data.get("descripcion") or "").strip()
+    fecha_limite = (data.get("fecha_limite") or "").strip()
+    if not titulo:
+        return jsonify({"error": "El título es obligatorio"}), 400
+    tid = new_id()
+    db = get_db()
+    db.execute("INSERT INTO tareas (id, clase_id, titulo, descripcion, fecha_limite) VALUES (?,?,?,?,?)",
+               (tid, cid, titulo, descripcion, fecha_limite))
+    db.commit()
+    db.close()
+    return jsonify({"id": tid, "titulo": titulo}), 201
+
+@app.delete("/api/maestro/tareas/<tid>")
+@require_auth("maestro")
+def maestro_delete_tarea(tid):
+    db = get_db()
+    db.execute("DELETE FROM tareas WHERE id=?", (tid,))
+    db.commit()
+    db.close()
+    return jsonify({"ok": True})
+
+@app.get("/api/maestro/tareas/<tid>/entregas")
+@require_auth("maestro")
+def maestro_list_entregas(tid):
+    db = get_db()
+    rows = db.execute("""
+        SELECT e.*, u.nombre as alumno_nombre
+        FROM entregas e
+        JOIN usuarios u ON u.id = e.alumno_id
+        WHERE e.tarea_id=?
+        ORDER BY e.created_at DESC
+    """, (tid,)).fetchall()
+    db.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.post("/api/maestro/entregas/<eid>/calificar")
+@require_auth("maestro")
+def maestro_calificar(eid):
+    data = request.get_json()
+    calificacion = data.get("calificacion")
+    db = get_db()
+    db.execute("UPDATE entregas SET calificacion=? WHERE id=?", (calificacion, eid))
+    db.commit()
+    db.close()
+    return jsonify({"ok": True})
+
+@app.get("/api/alumno/clases/<cid>/tareas")
+@require_auth("alumno")
+def alumno_list_tareas(cid):
+    db = get_db()
+    rows = db.execute("SELECT * FROM tareas WHERE clase_id=? ORDER BY created_at DESC", (cid,)).fetchall()
+    db.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.post("/api/alumno/tareas/<tid>/entregar")
+@require_auth("alumno")
+def alumno_entregar(tid):
+    if 'archivo' not in request.files:
+        return jsonify({"error": "No se envió archivo"}), 400
+    archivo = request.files['archivo']
+    try:
+        result = cloudinary.uploader.upload(archivo, resource_type="raw", folder="tareas")
+        url = result["secure_url"]
+        nombre = archivo.filename
+    except Exception as e:
+        return jsonify({"error": f"Error al subir archivo: {str(e)}"}), 500
+    db = get_db()
+    eid = new_id()
+    try:
+        db.execute("INSERT INTO entregas (id, tarea_id, alumno_id, archivo_url, archivo_nombre) VALUES (?,?,?,?,?)",
+                   (eid, tid, request.user_id, url, nombre))
+        db.commit()
+    except Exception:
+        db.execute("UPDATE entregas SET archivo_url=?, archivo_nombre=?, created_at=datetime('now') WHERE tarea_id=? AND alumno_id=?",
+                   (url, nombre, tid, request.user_id))
+        db.commit()
+    db.close()
+    return jsonify({"ok": True, "url": url}), 201
+
+@app.get("/api/alumno/tareas/<tid>/mi-entrega")
+@require_auth("alumno")
+def alumno_mi_entrega(tid):
+    db = get_db()
+    row = db.execute("SELECT * FROM entregas WHERE tarea_id=? AND alumno_id=?",
+                     (tid, request.user_id)).fetchone()
+    db.close()
+    return jsonify(dict(row) if row else {})
+# ─── anuncios ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/maestro/clases/<cid>/anuncios")
+@require_auth("maestro")
+def maestro_list_anuncios(cid):
+    db = get_db()
+    rows = db.execute("SELECT * FROM anuncios WHERE clase_id=? ORDER BY created_at DESC", (cid,)).fetchall()
+    db.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.post("/api/maestro/clases/<cid>/anuncios")
+@require_auth("maestro")
+def maestro_create_anuncio(cid):
+    data = request.get_json()
+    titulo = (data.get("titulo") or "").strip()
+    contenido = (data.get("contenido") or "").strip()
+    if not titulo or not contenido:
+        return jsonify({"error": "Título y contenido son obligatorios"}), 400
+    aid = new_id()
+    db = get_db()
+    db.execute("INSERT INTO anuncios (id, clase_id, titulo, contenido) VALUES (?,?,?,?)",
+               (aid, cid, titulo, contenido))
+    db.commit()
+    db.close()
+    return jsonify({"id": aid, "titulo": titulo}), 201
+
+@app.delete("/api/maestro/anuncios/<aid>")
+@require_auth("maestro")
+def maestro_delete_anuncio(aid):
+    db = get_db()
+    db.execute("DELETE FROM anuncios WHERE id=?", (aid,))
+    db.commit()
+    db.close()
+    return jsonify({"ok": True})
+
+@app.get("/api/alumno/clases/<cid>/anuncios")
+@require_auth("alumno")
+def alumno_list_anuncios(cid):
+    db = get_db()
+    rows = db.execute("SELECT * FROM anuncios WHERE clase_id=? ORDER BY created_at DESC", (cid,)).fetchall()
+    db.close()
+    return jsonify([dict(r) for r in rows])
+
+# ─── examenes ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/maestro/clases/<cid>/examenes")
+@require_auth("maestro")
+def maestro_list_examenes(cid):
+    db = get_db()
+    rows = db.execute("SELECT * FROM examenes WHERE clase_id=? ORDER BY created_at DESC", (cid,)).fetchall()
+    db.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.post("/api/maestro/clases/<cid>/examenes")
+@require_auth("maestro")
+def maestro_create_examen(cid):
+    data = request.get_json()
+    titulo = (data.get("titulo") or "").strip()
+    descripcion = (data.get("descripcion") or "").strip()
+    preguntas = data.get("preguntas", [])
+    if not titulo or not preguntas:
+        return jsonify({"error": "Título y preguntas son obligatorios"}), 400
+    eid = new_id()
+    db = get_db()
+    db.execute("INSERT INTO examenes (id, clase_id, titulo, descripcion) VALUES (?,?,?,?)",
+               (eid, cid, titulo, descripcion))
+    for p in preguntas:
+        pid = new_id()
+        db.execute("INSERT INTO preguntas (id, examen_id, texto, opcion_a, opcion_b, opcion_c, opcion_d, correcta) VALUES (?,?,?,?,?,?,?,?)",
+                   (pid, eid, p["texto"], p["opcion_a"], p["opcion_b"], p["opcion_c"], p["opcion_d"], p["correcta"]))
+    db.commit()
+    db.close()
+    return jsonify({"id": eid, "titulo": titulo}), 201
+
+@app.delete("/api/maestro/examenes/<eid>")
+@require_auth("maestro")
+def maestro_delete_examen(eid):
+    db = get_db()
+    db.execute("DELETE FROM examenes WHERE id=?", (eid,))
+    db.commit()
+    db.close()
+    return jsonify({"ok": True})
+
+@app.get("/api/maestro/examenes/<eid>/resultados")
+@require_auth("maestro")
+def maestro_resultados_examen(eid):
+    db = get_db()
+    rows = db.execute("""
+        SELECT r.*, u.nombre as alumno_nombre
+        FROM respuestas_examen r
+        JOIN usuarios u ON u.id = r.alumno_id
+        WHERE r.examen_id=?
+        ORDER BY r.created_at DESC
+    """, (eid,)).fetchall()
+    db.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.get("/api/alumno/clases/<cid>/examenes")
+@require_auth("alumno")
+def alumno_list_examenes(cid):
+    db = get_db()
+    rows = db.execute("SELECT * FROM examenes WHERE clase_id=? AND activo=1 ORDER BY created_at DESC", (cid,)).fetchall()
+    db.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.get("/api/alumno/examenes/<eid>")
+@require_auth("alumno")
+def alumno_get_examen(eid):
+    db = get_db()
+    examen = db.execute("SELECT * FROM examenes WHERE id=?", (eid,)).fetchone()
+    if not examen:
+        db.close()
+        return jsonify({"error": "Examen no encontrado"}), 404
+    ya_respondio = db.execute(
+        "SELECT id FROM respuestas_examen WHERE examen_id=? AND alumno_id=?",
+        (eid, request.user_id)
+    ).fetchone()
+    if ya_respondio:
+        db.close()
+        return jsonify({"error": "Ya respondiste este examen"}), 400
+    preguntas = db.execute(
+        "SELECT id, texto, opcion_a, opcion_b, opcion_c, opcion_d FROM preguntas WHERE examen_id=?",
+        (eid,)
+    ).fetchall()
+    db.close()
+    return jsonify({"examen": dict(examen), "preguntas": [dict(p) for p in preguntas]})
+
+@app.post("/api/alumno/examenes/<eid>/responder")
+@require_auth("alumno")
+def alumno_responder_examen(eid):
+    data = request.get_json()
+    respuestas = data.get("respuestas", {})
+    db = get_db()
+    ya_respondio = db.execute(
+        "SELECT id FROM respuestas_examen WHERE examen_id=? AND alumno_id=?",
+        (eid, request.user_id)
+    ).fetchone()
+    if ya_respondio:
+        db.close()
+        return jsonify({"error": "Ya respondiste este examen"}), 400
+    preguntas = db.execute("SELECT * FROM preguntas WHERE examen_id=?", (eid,)).fetchall()
+    correctas = 0
+    for p in preguntas:
+        if respuestas.get(p["id"]) == p["correcta"]:
+            correctas += 1
+    calificacion = round((correctas / len(preguntas)) * 10, 1) if preguntas else 0
+    rid = new_id()
+    db.execute("INSERT INTO respuestas_examen (id, examen_id, alumno_id, calificacion) VALUES (?,?,?,?)",
+               (rid, eid, request.user_id, calificacion))
+    for pid, resp in respuestas.items():
+        db.execute("INSERT INTO respuestas_pregunta (id, respuesta_examen_id, pregunta_id, respuesta) VALUES (?,?,?,?)",
+                   (new_id(), rid, pid, resp))
+    db.commit()
+    db.close()
+    return jsonify({"calificacion": calificacion, "correctas": correctas, "total": len(preguntas)}), 201
+
+# ─── comentarios ─────────────────────────────────────────────────────────────
+
+@app.post("/api/alumno/comentarios")
+@require_auth("alumno")
+def alumno_crear_comentario():
+    data = request.get_json()
+    tipo = data.get("tipo", "").strip()
+    referencia_id = data.get("referencia_id", "").strip()
+    mensaje = data.get("mensaje", "").strip()
+    if not tipo or not referencia_id or not mensaje:
+        return jsonify({"error": "Todos los campos son obligatorios"}), 400
+    cid = new_id()
+    db = get_db()
+    db.execute("INSERT INTO comentarios (id, tipo, referencia_id, alumno_id, mensaje) VALUES (?,?,?,?,?)",
+               (cid, tipo, referencia_id, request.user_id, mensaje))
+    db.commit()
+    db.close()
+    return jsonify({"id": cid}), 201
+
+@app.get("/api/alumno/comentarios/<tipo>/<referencia_id>")
+@require_auth("alumno")
+def alumno_get_comentarios(tipo, referencia_id):
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM comentarios WHERE tipo=? AND referencia_id=? AND alumno_id=? ORDER BY created_at ASC",
+        (tipo, referencia_id, request.user_id)
+    ).fetchall()
+    db.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.get("/api/maestro/comentarios/<tipo>/<referencia_id>")
+@require_auth("maestro")
+def maestro_get_comentarios(tipo, referencia_id):
+    db = get_db()
+    rows = db.execute("""
+        SELECT c.*, u.nombre as alumno_nombre
+        FROM comentarios c
+        JOIN usuarios u ON u.id = c.alumno_id
+        WHERE c.tipo=? AND c.referencia_id=?
+        ORDER BY c.created_at ASC
+    """, (tipo, referencia_id)).fetchall()
+    db.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.post("/api/maestro/comentarios/<cid>/responder")
+@require_auth("maestro")
+def maestro_responder_comentario(cid):
+    data = request.get_json()
+    respuesta = data.get("respuesta", "").strip()
+    if not respuesta:
+        return jsonify({"error": "Respuesta requerida"}), 400
+    db = get_db()
+    db.execute("UPDATE comentarios SET respuesta=? WHERE id=?", (respuesta, cid))
+    db.commit()
+    db.close()
+    return jsonify({"ok": True})
+
+@app.get("/api/alumno/comentarios/anuncio/<referencia_id>/publico")
+@require_auth("alumno")
+def alumno_get_comentarios_publicos(referencia_id):
+    db = get_db()
+    rows = db.execute("""
+        SELECT c.*, u.nombre as alumno_nombre
+        FROM comentarios c
+        JOIN usuarios u ON u.id = c.alumno_id
+        WHERE c.tipo='anuncio' AND c.referencia_id=?
+        ORDER BY c.created_at ASC
+    """, (referencia_id,)).fetchall()
+    db.close()
+    return jsonify([dict(r) for r in rows])
+
+
 if __name__ == "__main__":
     init_db()
     print("✅ Base de datos inicializada")
     print("✅ Admin por defecto: usuario=admin, contraseña=admin123")
     app.run(host="0.0.0.0", port=5000, debug=True)
+
+# Migración: agregar columna codigo si no existe
+try:
+    db = get_db()
+    db.execute("ALTER TABLE clases ADD COLUMN codigo TEXT UNIQUE")
+    db.commit()
+    db.close()
+    print("✅ Migración: columna codigo agregada")
+except:
+    pass

@@ -6,7 +6,7 @@ from flask import request, jsonify
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "asistencia-qr-secret-2026")
 JWT_ALGO = "HS256"
-JWT_EXP_HOURS = 8
+JWT_EXP_HOURS = 168
 
 
 def make_token(user_id: str, rol: str) -> str:
