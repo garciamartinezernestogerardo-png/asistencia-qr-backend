@@ -3,3 +3,5 @@ flask-cors>=4.0
 werkzeug>=3.0
 PyJWT>=2.7
 cloudinary>=1.36
+resend>=0.7
+psycopg2-binary>=2.9
