@@ -620,6 +620,96 @@ def alumno_get_comentarios_publicos(referencia_id):
     conn.close()
     return jsonify(rows)
 
+@app.route("/api/auth/registro", methods=["POST"])
+def registro_usuario():
+    data = request.get_json()
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
+    nombre = data.get("nombre", "").strip()
+    rol = data.get("rol", "").strip()
+    email = data.get("email", "").strip()
+    codigo_clase = data.get("codigo_clase", "").strip()
+
+    if not username or not password or not nombre or not rol or not email:
+        return jsonify({"error": "Todos los campos son obligatorios"}), 400
+    if rol not in ["maestro", "alumno"]:
+        return jsonify({"error": "Rol inválido"}), 400
+    if rol == "alumno" and not codigo_clase:
+        return jsonify({"error": "El código de clase es obligatorio"}), 400
+
+    conn = get_db()
+    cur = db_cursor(conn)
+    cur.execute("SELECT id FROM usuarios WHERE username=%s", (username,))
+    if fetchone(cur):
+        conn.close()
+        return jsonify({"error": "El usuario ya existe"}), 400
+
+    cur.execute("SELECT id FROM usuarios WHERE email=%s", (email,))
+    if fetchone(cur):
+        conn.close()
+        return jsonify({"error": "El correo ya está registrado"}), 400
+
+    clase = None
+    if rol == "alumno":
+        cur.execute("SELECT id FROM clases WHERE codigo=%s", (codigo_clase,))
+        clase = fetchone(cur)
+        if not clase:
+            conn.close()
+            return jsonify({"error": "Código de clase inválido"}), 400
+
+    codigo = str(random.randint(100000, 999999))
+    vid = new_id()
+    cur.execute("INSERT INTO verificaciones (id, email, codigo) VALUES (%s,%s,%s)", (vid, email, codigo))
+
+    hashed = generate_password_hash(password)
+    uid = new_id()
+    cur.execute("INSERT INTO usuarios (id, nombre, username, password, rol, email) VALUES (%s,%s,%s,%s,%s,%s)",
+               (uid, nombre, username, hashed, rol, email))
+
+    if rol == "alumno" and clase:
+        cur.execute("INSERT INTO inscripciones (id, clase_id, alumno_id) VALUES (%s,%s,%s)",
+                   (new_id(), clase["id"], uid))
+
+    conn.commit()
+    conn.close()
+
+    try:
+        resend.Emails.send({
+            "from": "Asistencia QR <onboarding@resend.dev>",
+            "to": email,
+            "subject": "Código de verificación - Asistencia QR",
+            "html": f"<h2>Bienvenido a Asistencia QR</h2><p>Tu código de verificación es:</p><h1 style='font-size:3rem;letter-spacing:0.5rem;color:#6C63FF'>{codigo}</h1><p>Este código expira en 10 minutos.</p>"
+        })
+    except Exception as e:
+        print(f"Error enviando correo: {e}")
+
+    return jsonify({"mensaje": "Registro exitoso. Revisa tu correo.", "user_id": uid}), 201
+
+
+@app.route("/api/auth/verificar", methods=["POST"])
+def verificar_codigo():
+    data = request.get_json()
+    email = data.get("email", "").strip()
+    codigo = data.get("codigo", "").strip()
+
+    if not email or not codigo:
+        return jsonify({"error": "Email y código son obligatorios"}), 400
+
+    conn = get_db()
+    cur = db_cursor(conn)
+    cur.execute("SELECT * FROM verificaciones WHERE email=%s AND codigo=%s AND usado=0 ORDER BY created_at DESC LIMIT 1", (email, codigo))
+    verificacion = fetchone(cur)
+
+    if not verificacion:
+        conn.close()
+        return jsonify({"error": "Código inválido o expirado"}), 400
+
+    cur.execute("UPDATE verificaciones SET usado=1 WHERE id=%s", (verificacion["id"],))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"mensaje": "Correo verificado exitosamente"}), 200
+
 if __name__ == "__main__":
     init_db()
     print("✅ Base de datos PostgreSQL inicializada")
