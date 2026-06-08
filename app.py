@@ -378,43 +378,41 @@ def alumno_entregar(tid):
     archivo = request.files['archivo']
     try:
         import mimetypes
-mime = mimetypes.guess_type(archivo.filename)[0] or 'application/octet-stream'
-if mime.startswith('image/'):
-    resource_type = "image"
-else:
-    resource_type = "raw"
-result = cloudinary.uploader.upload(archivo, resource_type=resource_type, folder="tareas")
+        mime = mimetypes.guess_type(archivo.filename)[0] or 'application/octet-stream'
+        resource_type = "image" if mime.startswith('image/') else "raw"
+        result = cloudinary.uploader.upload(archivo, resource_type=resource_type, folder="tareas")
         url = result["secure_url"]
         nombre = archivo.filename
     except Exception as e:
         return jsonify({"error": f"Error al subir archivo: {str(e)}"}), 500
-    conn = get_db()
-cur = db_cursor(conn)
-# Verificar si es entrega tardía
-cur.execute("SELECT fecha_limite FROM tareas WHERE id=%s", (tid,))
-tarea = fetchone(cur)
-tardio = False
-if tarea and tarea["fecha_limite"]:
-    from datetime import date
-    try:
-        fecha_limite = date.fromisoformat(tarea["fecha_limite"])
-        if date.today() > fecha_limite:
-            tardio = True
-    except:
-        pass
 
-eid = new_id()
-try:
-    cur.execute("INSERT INTO entregas (id, tarea_id, alumno_id, archivo_url, archivo_nombre, comentario) VALUES (%s,%s,%s,%s,%s,%s)", 
-               (eid, tid, request.user_id, url, nombre, "tardio" if tardio else None))
+    conn = get_db()
+    cur = db_cursor(conn)
+
+    cur.execute("SELECT fecha_limite FROM tareas WHERE id=%s", (tid,))
+    tarea = fetchone(cur)
+    tardio = False
+    if tarea and tarea["fecha_limite"]:
+        from datetime import date
+        try:
+            fecha_limite = date.fromisoformat(tarea["fecha_limite"])
+            if date.today() > fecha_limite:
+                tardio = True
+        except:
+            pass
+
+    eid = new_id()
+    try:
+        cur.execute("INSERT INTO entregas (id, tarea_id, alumno_id, archivo_url, archivo_nombre, comentario) VALUES (%s,%s,%s,%s,%s,%s)",
+                   (eid, tid, request.user_id, url, nombre, "tardio" if tardio else None))
         conn.commit()
     except Exception:
         conn.rollback()
-        cur.execute("UPDATE entregas SET archivo_url=%s, archivo_nombre=%s WHERE tarea_id=%s AND alumno_id=%s", (url, nombre, tid, request.user_id))
+        cur.execute("UPDATE entregas SET archivo_url=%s, archivo_nombre=%s WHERE tarea_id=%s AND alumno_id=%s",
+                   (url, nombre, tid, request.user_id))
         conn.commit()
     conn.close()
     return jsonify({"ok": True, "url": url, "tardio": tardio}), 201
-
 @app.get("/api/alumno/tareas/<tid>/mi-entrega")
 @require_auth("alumno")
 def alumno_mi_entrega(tid):
